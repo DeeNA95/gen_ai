@@ -17,12 +17,14 @@ print(f'device available: {device}')
 #env
 batch_size = 256
 block_size = 256
-max_iters = 500
-eval_iters = 100
-n_embd = 256 # embedding dimension
-lr = 1e-4
-HEAD_SIZE = 32
-N_HEADS = 4
+max_iters = 2000
+eval_iters = 200
+n_embd = 512 # embedding dimension
+lr = 3e-4
+HEAD_SIZE = 64
+N_HEADS = 8
+dropout=0.2
+n_layers = 8
 
 
 with open('GPT/data/wikitext-2-raw/wiki.train.raw', 'r') as f:
@@ -88,13 +90,13 @@ def get_batch(split):
 
 class Head(nn.Module):
     """single head of self attention"""
-    def __init__(self, HEAD_SIZE):
+    def __init__(self, head_size):
         super().__init__()
-        self.key = nn.Linear(n_embd, n_embd, bias=False)
-        self.query = nn.Linear(n_embd, n_embd, bias=False)
-        self.value = nn.Linear(n_embd, n_embd, bias=False)
+        self.key = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         B,T,C = x.shape
@@ -105,6 +107,7 @@ class Head(nn.Module):
         weights = (q @ k.transpose(-2, -1)) * (C ** -0.5) # B x T x T
         weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # B x T x T
         weights = F.softmax(weights, dim=-1)
+        weights = self.dropout(weights)
 
         output = weights @ v # B x T x C
         return output
@@ -113,19 +116,57 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, head_size, n_heads):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1) #concatenated over the channel dim
+        output = torch.cat([h(x) for h in self.heads], dim=-1) #concatenated over the channel dim
+        output = self.dropout(self.proj(output))
+        return output
+
+class FeedForward(nn.Module):
+    def __init__(self,n_embd):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd,4* n_embd),
+            nn.GELU(),
+            nn.Linear(n_embd * 4, n_embd),
+            nn.Dropout(dropout)
+
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class Block(nn.Module):
+    def __init__(self, n_embd, n_heads):
+        super().__init__()
+        head_size = n_embd // n_heads
+        self.sa = MultiHeadAttention(head_size, n_heads)
+        self.ff = FeedForward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self,x):
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ff(self.ln2(x))
+        return x
 
 # Baseline Bigram Model
 
-class BiGram(nn.Module):
+class Transformer(nn.Module):
     def __init__(self):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.blocks = nn.Sequential(
+            *[Block(n_embd, N_HEADS) for _ in range(n_layers)],
+            nn.LayerNorm(n_embd)
+        )
         self.linear_layer = nn.Linear(n_embd, vocab_size)
-        self.sa_head = MultiHeadAttention(HEAD_SIZE/N_HEADS, N_HEADS)
+        self.sa_head = MultiHeadAttention(n_embd//N_HEADS, N_HEADS)
+        self.ff = FeedForward(n_embd)
+
 
     def forward(self, idx, targets=None):
         B,T = idx.shape
@@ -134,7 +175,7 @@ class BiGram(nn.Module):
         postion_embeddings = self.position_embedding_table(torch.arange(T, device=device)) # T x n_embd tensor
         x = token_embeddings + postion_embeddings # B x T x n_embd tensor
 
-        x = self.sa_head(x) # apply self attention head to get output
+        x = self.blocks(x)
 
         # logits is a batch_size x block_size x vocab_size tensor
         logits = self.linear_layer(x) # apply linear layer to get logits
@@ -163,7 +204,7 @@ class BiGram(nn.Module):
 
 #init model
 
-model = BiGram()
+model = Transformer()
 model.to(device)
 
 # init optimiser
