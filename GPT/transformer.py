@@ -1,3 +1,4 @@
+#! /usr/bin/env python3
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -16,9 +17,13 @@ print(f'device available: {device}')
 #env
 batch_size = 256
 block_size = 256
-max_iters = 10000
-eval_iters = 1000
+max_iters = 500
+eval_iters = 100
 n_embd = 256 # embedding dimension
+lr = 1e-4
+HEAD_SIZE = 16
+N_HEADS = 4
+
 
 with open('GPT/data/wikitext-2-raw/wiki.train.raw', 'r') as f:
     text = f.read()
@@ -81,6 +86,32 @@ def get_batch(split):
     y = torch.stack([batch_data[i+1:i+block_size+1] for i in ix])
     return x.to(device), y.to(device)
 
+class Head(nn.Module):
+    """single head of self attention"""
+    def __init__(self, HEAD_SIZE):
+        super().__init__()
+        self.key = nn.Linear(n_embd, n_embd, bias=False)
+        self.query = nn.Linear(n_embd, n_embd, bias=False)
+        self.value = nn.Linear(n_embd, n_embd, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.dropout = nn.Dropout(0.1)
+
+    def forward(self, x):
+        B,T,C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        v = self.value(x)
+
+        weights = (q @ k.transpose(-2, -1)) * (C ** -0.5) # B x T x T
+        weights = weights.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # B x T x T
+        weights = F.softmax(weights, dim=-1)
+
+        output = weights @ v # B x T x C
+        return output
+
+
+
+
 # Baseline Bigram Model
 
 class BiGram(nn.Module):
@@ -89,6 +120,7 @@ class BiGram(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.linear_layer = nn.Linear(n_embd, vocab_size)
+        self.sa_head = Head(HEAD_SIZE)
 
     def forward(self, idx, targets=None):
         B,T = idx.shape
@@ -96,6 +128,8 @@ class BiGram(nn.Module):
         token_embeddings = self.token_embedding_table(idx) # B x T x n_embd tensor
         postion_embeddings = self.position_embedding_table(torch.arange(T, device=device)) # T x n_embd tensor
         x = token_embeddings + postion_embeddings # B x T x n_embd tensor
+
+        x = self.sa_head(x) # apply self attention head to get output
 
         # logits is a batch_size x block_size x vocab_size tensor
         logits = self.linear_layer(x) # apply linear layer to get logits
@@ -114,7 +148,8 @@ class BiGram(nn.Module):
     def generate(self, idx, max_new_tokens):
         # generate new tokens
         for _ in range(max_new_tokens):
-            logits, loss = self(idx)
+            idx_cond = idx[:, -block_size:]
+            logits, loss = self(idx_cond)
             logits = logits[:, -1, :] # last time step logits  since bigram  B,C
             probs = F.softmax(logits, dim=-1)
             idx_next = torch.multinomial(probs, num_samples=1) #B,1
@@ -127,7 +162,7 @@ model = BiGram()
 model.to(device)
 
 # init optimiser
-optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+optimizer = optim.AdamW(model.parameters(), lr=lr)
 
 # loss esitmator
 
@@ -150,7 +185,7 @@ def estimate_loss():
 # training loop
 for iter in range(max_iters):
 
-    if iter % 1000 == 0:
+    if iter % 100 == 0:
         losses = estimate_loss()
         print(f"iter {iter}: train loss {losses['train']:.4f}, valid loss {losses['val']:.4f}")
 
