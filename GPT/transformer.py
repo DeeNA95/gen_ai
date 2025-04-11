@@ -21,7 +21,7 @@ max_iters = 500
 eval_iters = 100
 n_embd = 256 # embedding dimension
 lr = 1e-4
-HEAD_SIZE = 16
+HEAD_SIZE = 32
 N_HEADS = 4
 
 
@@ -109,8 +109,13 @@ class Head(nn.Module):
         output = weights @ v # B x T x C
         return output
 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, head_size, n_heads):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(head_size) for _ in range(n_heads)])
 
-
+    def forward(self, x):
+        return torch.cat([h(x) for h in self.heads], dim=-1) #concatenated over the channel dim
 
 # Baseline Bigram Model
 
@@ -120,7 +125,7 @@ class BiGram(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.linear_layer = nn.Linear(n_embd, vocab_size)
-        self.sa_head = Head(HEAD_SIZE)
+        self.sa_head = MultiHeadAttention(HEAD_SIZE/N_HEADS, N_HEADS)
 
     def forward(self, idx, targets=None):
         B,T = idx.shape
