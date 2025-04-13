@@ -4,13 +4,27 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import string
+try:
+    import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.parallel_loader as pl
+    _xla_available = True
+except ImportError:
+    _xla_available = False
 
-if torch.cuda.is_available():
+# Check for TPU first
+if _xla_available:
+    device = xm.xla_device()
+    print("Using TPU via PyTorch/XLA")
+elif torch.cuda.is_available():
     device = torch.device("cuda")
+    print("Using CUDA GPU")
 elif torch.backends.mps.is_available():
+    # Note: MPS support for all ops might vary.
     device = torch.device("mps")
+    print("Using Apple Metal (MPS)")
 else:
     device = torch.device("cpu")
+    print("Using CPU")
 
 print(f'device available: {device}')
 
@@ -19,12 +33,12 @@ batch_size = 256
 block_size = 256
 max_iters = 2000
 eval_iters = 200
-n_embd = 512 # embedding dimension
+n_embd = 384 # embedding dimension
 lr = 3e-4
 HEAD_SIZE = 64
-N_HEADS = 8
+N_HEADS = 6
 dropout=0.2
-n_layers = 8
+n_layers = 6
 
 
 with open('GPT/data/wikitext-2-raw/wiki.train.raw', 'r') as f:
@@ -240,6 +254,8 @@ for iter in range(max_iters):
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
+    if _xla_available:
+        xm.mark_step() # Required for XLA graph execution
 
 print("Training complete")
 
