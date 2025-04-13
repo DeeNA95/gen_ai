@@ -12,6 +12,7 @@ try:
     import torch_xla.core.xla_model as xm
     import torch_xla.distributed.parallel_loader as pl
     import torch_xla.distributed.xla_multiprocessing as xmp
+    import torch_xla.runtime as xr  # Import runtime
 
     _xla_available = True
 except ImportError:
@@ -256,7 +257,7 @@ def estimate_loss(model, device, using_xla=False):
 
         # For XLA, aggregate losses across devices
         if using_xla:
-            losses = xm.all_reduce(xm.REDUCE_SUM, losses) / xm.xrt_world_size()
+            losses = xm.all_reduce(xm.REDUCE_SUM, losses) / xr.world_size()  # Use xr.world_size
             out[split] = losses.mean().item()  # Get scalar value after reduction
         else:
             out[split] = losses.mean().item()  # Get scalar value
@@ -298,7 +299,7 @@ def _mp_fn(rank, flags):
     train_dataset = SimpleDataset(data, flags['block_size'])
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         train_dataset,
-        num_replicas=xm.xrt_world_size(),
+        num_replicas=xr.world_size(),  # Use xr.world_size
         rank=rank,
         shuffle=True,
         seed=flags['seed']
@@ -355,7 +356,7 @@ if __name__ == '__main__':
     using_xla_multiprocessing = False
 
     if _xla_available:
-        world_size = xm.xrt_world_size()
+        world_size = xr.world_size()  # Use xr.world_size
         if world_size > 1:
             print(f"Found {world_size} XLA devices. Using XLA multiprocessing.")
             # Spawn processes for XLA training
